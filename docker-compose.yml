@@ -1,0 +1,172 @@
+# =============================================================================
+# Docker Compose Configuration for Helfy AI E-commerce Application
+# =============================================================================
+# This file orchestrates all services needed to run the full application:
+# - MySQL 8.0 database
+# - Node.js/Express backend API
+# - React frontend development server
+#
+# Quick Commands:
+# - Start all services: docker-compose up --build
+# - Start in background: docker-compose up -d
+# - Stop all services: docker-compose down
+# - View logs: docker-compose logs -f
+# - Reset database: docker-compose down -v (removes all data!)
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # MySQL Database Service
+  # ===========================================================================
+  # Purpose: Persistent data storage for users, products, orders, cart
+  # Image: mysql:8.0 (official MySQL image from Docker Hub)
+  # Auto-initialization: Runs schema.sql on first startup
+  # ===========================================================================
+  mysql:
+    image: mysql:8.0
+    container_name: helfy-mysql
+    restart: always
+    
+    # Environment variables for MySQL configuration
+    # Uses values from .env file with fallback defaults
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-rootpassword}      # Root user password
+      MYSQL_DATABASE: ${DB_NAME:-helfy_ecommerce}            # Database name to create
+      MYSQL_USER: ${DB_USER:-helfy_user}                     # Application user
+      MYSQL_PASSWORD: ${DB_PASSWORD:-userpassword}           # Application user password
+    
+    # Port mapping: host:container
+    # Allows local MySQL clients to connect
+    ports:
+      - "3306:3306"
+    
+    # Persistent storage and initialization
+    volumes:
+      - mysql_data:/var/lib/mysql                                              # Persist data
+      - ./server/database/schema.sql:/docker-entrypoint-initdb.d/schema.sql  # Auto-init DB
+    
+    # Network for inter-container communication
+    networks:
+      - helfy-network
+    
+    # Health check to ensure MySQL is ready before starting dependent services
+    # Tests database connectivity every 30 seconds
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 40s
+
+  # ===========================================================================
+  # Backend API Service
+  # ===========================================================================
+  # Purpose: Express.js REST API server
+  # Build: Uses Dockerfile in project root
+  # Dependencies: Waits for MySQL to be healthy before starting
+  # ===========================================================================
+  backend:
+    build:
+      context: .                    # Build context (entire project)
+      dockerfile: Dockerfile        # Dockerfile location
+    container_name: helfy-backend
+    restart: always                 # Auto-restart on failure
+    
+    # Environment variables for backend configuration
+    # All values loaded from .env file with secure defaults
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}                                  # Environment mode
+      PORT: ${PORT:-5000}                                                 # Server port
+      DB_HOST: mysql                                                      # Database host (container name)
+      DB_USER: ${DB_USER:-helfy_user}                                    # Database username
+      DB_PASSWORD: ${DB_PASSWORD:-userpassword}                          # Database password
+      DB_NAME: ${DB_NAME:-helfy_ecommerce}                               # Database name
+      DB_PORT: 3306                                                       # Database port
+      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret_key_change_this}         # JWT secret (CHANGE IN PRODUCTION!)
+      FRONTEND_URL: http://localhost:3000                                 # CORS allowed origin
+    
+    # Port mapping for external access
+    ports:
+      - "5000:5000"
+    
+    # Wait for MySQL to be healthy before starting
+    # Prevents connection errors on startup
+    depends_on:
+      mysql:
+        condition: service_healthy
+    
+    # Network for communication with other services
+    networks:
+      - helfy-network
+    
+    # Volume mounts for development
+    # - Maps local server/ to container /app for hot-reloading
+    # - Preserves node_modules in container (not overwritten by host)
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+
+  # ===========================================================================
+  # Frontend Development Service
+  # ===========================================================================
+  # Purpose: React development server with hot-reloading
+  # Image: node:18-alpine (lightweight Node.js environment)
+  # Optional: Only needed for development; production uses backend's static files
+  # ===========================================================================
+  frontend:
+    image: node:18-alpine                # Official Node.js Alpine image
+    container_name: helfy-frontend
+    working_dir: /app                    # Set working directory
+    
+    # Environment variables for React app
+    # REACT_APP_* variables are embedded in the build
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000/api    # Backend API URL
+      - CHOKIDAR_USEPOLLING=true                        # Fix file watching in Docker
+    
+    # Port mapping for React dev server
+    ports:
+      - "3000:3000"
+    
+    # Volume mounts for development
+    # - Maps local frontend/ to container /app for hot-reloading
+    # - Preserves node_modules in container
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    
+    # Install dependencies and start React dev server
+    # Note: Uses npm start which runs react-scripts start
+    command: sh -c "npm install && npm start"
+    
+    # Connect to shared network
+    networks:
+      - helfy-network
+    
+    # Wait for backend to be ready
+    depends_on:
+      - backend
+
+# =============================================================================
+# Networks
+# =============================================================================
+# Custom bridge network for inter-service communication
+# Allows services to communicate using container names as hostnames
+# =============================================================================
+networks:
+  helfy-network:
+    driver: bridge
+    name: helfy-ecommerce-network
+
+# =============================================================================
+# Volumes
+# =============================================================================
+# Named volume for MySQL data persistence
+# Data survives container restarts but is removed with 'docker-compose down -v'
+# =============================================================================
+volumes:
+  mysql_data:
+    driver: local
+    name: helfy-mysql-data
